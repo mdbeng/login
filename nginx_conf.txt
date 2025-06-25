@@ -1,0 +1,103 @@
+# Define rate and connection limits
+limit_req_zone $binary_remote_addr zone=req_limit_per_ip:10m rate=10r/s;
+limit_conn_zone $binary_remote_addr zone=conn_limit_per_ip:10m;
+
+server {
+    listen       443 ssl http2;
+    listen       [::]:443 ssl http2;
+    server_name  gloryot.com www.gloryot.com;
+
+    root   /var/www/html/Website;
+    index  index.php index.html index.htm;
+
+    # SSL Configuration (without ssl_stapling)
+    ssl_certificate     /etc/nginx/ssl/gloryot.com.pem;
+    ssl_certificate_key /etc/nginx/ssl/gloryot.com.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+    resolver 1.1.1.1 8.8.8.8 valid=300s;
+    resolver_timeout 5s;
+
+    # Logging (enable for Fail2Ban or monitoring)
+    access_log /var/log/nginx/access.log;
+    error_log /var/log/nginx/error.log warn;
+
+    # Request limits and slow connection protection
+    client_max_body_size 1m;
+    client_body_timeout 10s;
+    client_header_timeout 10s;
+    keepalive_timeout 15s;
+    send_timeout 10s;
+    reset_timedout_connection on;
+
+    # HTTP headers (L7 hardening)
+    add_header X-Frame-Options "SAMEORIGIN";
+    add_header X-Content-Type-Options "nosniff";
+    add_header Referrer-Policy "no-referrer-when-downgrade";
+    add_header Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()";
+
+    # Block methods other than GET, POST, HEAD
+    if ($request_method !~ ^(GET|HEAD|POST)$) {
+        return 444;
+    }
+
+    # Block empty user agents (common bots)
+    if ($http_user_agent = "") {
+        return 403;
+    }
+
+    # Apply global rate & connection limits
+    limit_req zone=req_limit_per_ip burst=5 nodelay;
+    limit_conn conn_limit_per_ip 3;
+
+    # Sensitive file/path blocking
+    location ~ ^/(conf|doc|sql|setup|system)/ {
+        deny all;
+        return 403;
+    }
+
+    location ~ /\.ht {
+        deny all;
+    }
+
+    location ~ /\.git {
+        return 403;
+    }
+
+    location ~* \.(pl|cgi|py|sh|lua)$ {
+        return 403;
+    }
+
+    location ~* ^/wp-content/uploads/.*\.(asp|cgi|htm|html|js|jsp|php|pl|py|sh|shtml|swf)$ {
+        return 403;
+    }
+
+    location ~* ^/(readme|license|schema|password|passwords).*\.(txt|html)$ {
+        return 403;
+    }
+
+    # Optional: extra limit for sensitive route
+    location = /login.php {
+        limit_req zone=req_limit_per_ip burst=5 nodelay;
+        include fastcgi_params;
+        fastcgi_pass unix:/run/php/php8.2-fpm.sock;
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+    }
+
+    # Main route
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    # PHP handling
+    location ~ \.php$ {
+        include fastcgi_params;
+        fastcgi_pass unix:/run/php/php8.2-fpm.sock;
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+    }
+}
